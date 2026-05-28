@@ -1,0 +1,6 @@
+japanese_tutor.db
+__pycache__/
+*.pyc
+.env
+*.pt
+*.onnx

@@ -1,0 +1,31 @@
+# Japanese Tutor — Python dependencies
+# Install: pip install -r requirements.txt
+
+# Desktop UI
+PySide6>=6.6.0
+
+# Speech-to-text (Whisper — fast CPU version)
+faster-whisper>=1.0.0
+
+# Audio capture & playback
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24.0
+
+# Voice Activity Detection
+torch>=2.1.0
+torchaudio>=2.1.0
+silero-vad>=4.0.0
+
+# HTTP (Ollama + VOICEVOX)
+requests>=2.31.0
+
+# Japanese NLP safety layer (optional but recommended)
+ginza>=5.1.3
+ja-ginza>=5.1.3
+spacy>=3.7.0
+
+# ffmpeg is also required (not pip):
+# Ubuntu/Debian: sudo apt install ffmpeg
+# macOS:         brew install ffmpeg
+# Windows:       https://ffmpeg.org/download.html
