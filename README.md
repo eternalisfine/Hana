@@ -48,11 +48,24 @@ brew install ffmpeg
 # Windows — download from https://ffmpeg.org/download.html
 ```
 
-### 2. Python packages
+### 2. Python virtual environment & packages
+
+Create a virtual environment first (required on Arch, recommended everywhere):
 
 ```bash
+# Create the venv inside the project folder
+python -m venv venv
+
+# Activate it — run this every time you open a new terminal
+source venv/bin/activate        # Linux / macOS
+venv\Scripts\activate           # Windows (PowerShell)
+
+# Install dependencies
 pip install -r requirements.txt
 ```
+
+> **Arch Linux:** using a venv is mandatory — Arch blocks global pip installs to protect the system Python.  
+> **Other distros:** a venv is still recommended to keep things clean.
 
 > GiNZA installs a ~100MB Japanese NLP model. It's optional but recommended.  
 > The app works without it — accuracy warnings just won't be as detailed.
@@ -110,10 +123,22 @@ Run `GET http://localhost:50021/speakers` for the full list.
 ## Running
 
 ```bash
-# Make sure Ollama is running: ollama serve
-# Make sure VOICEVOX is running (launch the app)
+# 1. Activate the venv (every new terminal)
+source venv/bin/activate        # Linux / macOS
+venv\Scripts\activate           # Windows (PowerShell)
 
+# 2. Make sure Ollama is running
+ollama serve
+
+# 3. Make sure VOICEVOX is open and running
+
+# 4. Start the app
 python main.py
+```
+
+Or use the run script (Linux / macOS):
+```bash
+./run.sh
 ```
 
 The app will:
@@ -125,10 +150,11 @@ The app will:
 
 ## First launch checklist
 
+- [ ] venv created and activated (`source venv/bin/activate`)
 - [ ] `ollama serve` is running in a terminal
 - [ ] `qwen2.5:7b` (or your chosen model) is pulled
 - [ ] VOICEVOX app is open and running
-- [ ] Python dependencies are installed
+- [ ] Python dependencies installed (`pip install -r requirements.txt`)
 - [ ] ffmpeg is installed
 - [ ] Microphone is connected and working
 
@@ -150,7 +176,8 @@ The app will:
 → Normal on CPU. Try `qwen2.5:3b` for faster but slightly lower quality
 
 **Japanese fonts look wrong**  
-→ Install Noto Sans JP: `sudo apt install fonts-noto-cjk`
+→ Ubuntu/Debian: `sudo apt install fonts-noto-cjk`  
+→ Arch Linux: `sudo pacman -S noto-fonts-cjk`
 
 ---
 
