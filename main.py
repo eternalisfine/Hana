@@ -342,11 +342,29 @@ class SettingsDialog(QDialog):
         layout.addRow(save_btn)
 
     def _save(self):
-        import config
-        config.OLLAMA_MODEL = self._model.text().strip()
-        config.VOICEVOX_SPEAKER_ID = self._speaker.value()
-        config.WHISPER_MODEL = self._whisper.text().strip()
-        self.accept()
+        import config, os, sys
+
+        # Persist changes to config.py on disk
+        config_path = os.path.join(os.path.dirname(__file__), "config.py")
+        with open(config_path, "r") as f:
+            src = f.read()
+
+        def _replace(src, key, value):
+            import re
+            if isinstance(value, str):
+                return re.sub(rf'^({key}\s*=\s*).*', rf'\g<1>"{value}"', src, flags=re.MULTILINE)
+            else:
+                return re.sub(rf'^({key}\s*=\s*).*', rf'\g<1>{value}', src, flags=re.MULTILINE)
+
+        src = _replace(src, "OLLAMA_MODEL",        self._model.text().strip())
+        src = _replace(src, "WHISPER_MODEL",        self._whisper.text().strip())
+        src = _replace(src, "VOICEVOX_SPEAKER_ID",  self._speaker.value())
+
+        with open(config_path, "w") as f:
+            f.write(src)
+
+        # Relaunch the process
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 # ── Main window ───────────────────────────────────────────────────────────────
