@@ -550,6 +550,20 @@ class MainWindow(QMainWindow):
         self._speed_slider.valueChanged.connect(self._on_speed_change)
 
         layout.addWidget(self._en_btn)
+
+        # Pause button
+        self._pause_btn = QPushButton("⏸  Pause")
+        self._pause_btn.setCheckable(True)
+        self._pause_btn.setChecked(False)
+        self._pause_btn.setFixedHeight(26)
+        self._pause_btn.setFont(QFont("Noto Sans JP", 10))
+        self._pause_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_CARD}; color: {TEXT_SEC}; border: 1px solid {BORDER}; border-radius: 5px; padding: 0 12px; }}"
+            f"QPushButton:checked {{ background: {WARN}; color: white; border: none; }}"
+        )
+        self._pause_btn.toggled.connect(self._on_pause_toggle)
+        layout.addWidget(self._pause_btn)
+
         layout.addStretch()
         layout.addWidget(speed_lbl)
         layout.addWidget(self._speed_slider)
@@ -639,6 +653,32 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self)
         dlg.exec()
+
+    # ── Pause ─────────────────────────────────────────────────────────────────
+
+    def _on_pause_toggle(self, paused: bool):
+        if paused:
+            self._pause_btn.setText("▶  Resume")
+            # Stop TTS immediately
+            if self._pipeline:
+                self._pipeline.tts.interrupt()
+            # Mute listener so audio is ignored
+            if self._listener:
+                self._listener.mute()
+            # Drain the audio queue so pending audio is discarded
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                except Exception:
+                    break
+            self._on_status("idle")
+            self._chat.add_system("⏸ Paused")
+        else:
+            self._pause_btn.setText("⏸  Pause")
+            if self._listener:
+                self._listener.unmute()
+            self._on_status("listening")
+            self._chat.add_system("▶ Resumed")
 
     # ── Controls handlers ─────────────────────────────────────────────────────
 
