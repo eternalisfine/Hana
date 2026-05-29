@@ -20,6 +20,7 @@ class TTSPlayer:
         self._lock       = threading.Lock()
         self._thread     = None
         self.speaker_id  = VOICEVOX_SPEAKER_ID
+        self.speed       = 0.9    # Playback speed (0.5–2.0)
         self.on_start    = None   # Callback when playback starts
         self.on_end      = None   # Callback when playback ends
 
@@ -74,8 +75,8 @@ class TTSPlayer:
 
         query = qr.json()
 
-        # Slightly slower, clearer speech for language learning
-        query["speedScale"]  = 0.9
+        # Speed controlled by slider; intonation fixed for clarity
+        query["speedScale"]      = self.speed
         query["intonationScale"] = 1.1
 
         # Step 2: synthesis

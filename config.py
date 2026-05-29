@@ -1,13 +1,13 @@
 # config.py — Edit these to match your setup
 
-OLLAMA_MODEL        = "qwen2.5:7b"          # Change to your pulled model
+OLLAMA_MODEL        = "qwen2.5:3b"
 OLLAMA_URL          = "http://localhost:11434/api/chat"
 
-WHISPER_MODEL       = "medium"              # tiny / base / small / medium / large-v3
+WHISPER_MODEL       = "medium"
 WHISPER_LANGUAGE    = "ja"                  # Force Japanese transcription
 
 VOICEVOX_URL        = "http://localhost:50021"
-VOICEVOX_SPEAKER_ID = 1                     # 0=四国めたん, 1=ずんだもん, 2=春日部つむぎ
+VOICEVOX_SPEAKER_ID = 2
                                             # Run: GET /speakers for full list
 
 VAD_THRESHOLD       = 0.5                   # 0.0–1.0, higher = less sensitive

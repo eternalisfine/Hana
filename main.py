@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QScrollArea, QFrame, QPushButton, QDialog, QFormLayout,
     QLineEdit, QSpinBox, QComboBox, QSizePolicy, QSplitter,
-    QTextEdit, QGraphicsDropShadowEffect,
+    QTextEdit, QGraphicsDropShadowEffect, QSlider,
 )
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer, QSize, QPropertyAnimation, QRect
 from PySide6.QtGui import QFont, QColor, QPalette, QPixmap, QIcon, QFontDatabase
@@ -180,6 +180,10 @@ class MessageBubble(QFrame):
         # Max width
         bubble.setMaximumWidth(680)
 
+    def set_english_visible(self, visible: bool):
+        for w in getattr(self, '_meta_widgets', []):
+            w.setVisible(visible)
+
     def _build_user_content(self, text: str) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -214,11 +218,13 @@ class MessageBubble(QFrame):
         layout.addWidget(jp_lbl)
 
         # Meta section (English, notes, corrections)
+        self._meta_widgets = []
         if meta_part:
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
             sep.setStyleSheet(f"color: {BORDER}; background: {BORDER}; max-height:1px;")
             layout.addWidget(sep)
+            self._meta_widgets.append(sep)
 
             meta_lbl = QLabel(meta_part)
             meta_lbl.setWordWrap(True)
@@ -226,6 +232,7 @@ class MessageBubble(QFrame):
             meta_lbl.setStyleSheet(f"color: {TEXT_SEC}; background: transparent;")
             meta_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
             layout.addWidget(meta_lbl)
+            self._meta_widgets.append(meta_lbl)
 
         # Warning badge
         if flagged:
@@ -252,8 +259,10 @@ class ChatArea(QScrollArea):
             QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 3px; }}
         """)
 
-        self._container = QWidget()
-        self._layout    = QVBoxLayout(self._container)
+        self._container   = QWidget()
+        self._layout      = QVBoxLayout(self._container)
+        self._bubbles     = []
+        self._show_english = True
         self._layout.setContentsMargins(0, 16, 0, 16)
         self._layout.setSpacing(8)
         self._layout.addStretch()
@@ -261,9 +270,16 @@ class ChatArea(QScrollArea):
 
     def add_message(self, role: str, text: str, flagged: bool = False):
         bubble = MessageBubble(role, text, flagged)
+        bubble.set_english_visible(self._show_english)
+        self._bubbles.append(bubble)
         # Insert before the trailing stretch
         self._layout.insertWidget(self._layout.count() - 1, bubble)
         QTimer.singleShot(50, self._scroll_to_bottom)
+
+    def set_english_visible(self, visible: bool):
+        self._show_english = visible
+        for b in self._bubbles:
+            b.set_english_visible(visible)
 
     def add_system(self, text: str):
         lbl = QLabel(text)
@@ -482,8 +498,63 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self._session_lbl)
 
         root.addWidget(header)
+        root.addWidget(self._build_controls_bar())
         root.addWidget(self._chat)
         root.addWidget(status_bar)
+
+
+    # ── Controls bar ──────────────────────────────────────────────────────────
+
+    def _build_controls_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setFixedHeight(42)
+        bar.setStyleSheet(
+            f"QFrame {{ background: {BG_PANEL}; border-bottom: 1px solid {BORDER}; }}"
+        )
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 0, 16, 0)
+        layout.setSpacing(16)
+
+        # EN caption toggle
+        self._en_btn = QPushButton("\U0001f1ec\U0001f1e7  English  ON")
+        self._en_btn.setCheckable(True)
+        self._en_btn.setChecked(True)
+        self._en_btn.setFixedHeight(26)
+        self._en_btn.setFont(QFont("Noto Sans JP", 10))
+        self._en_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: white; border: none; border-radius: 5px; padding: 0 12px; }}"
+            f"QPushButton:!checked {{ background: {BG_CARD}; color: {TEXT_SEC}; border: 1px solid {BORDER}; }}"
+        )
+        self._en_btn.toggled.connect(self._on_en_toggle)
+
+        # Speed label + slider
+        speed_lbl = QLabel("Speed:")
+        speed_lbl.setFont(QFont("Noto Sans JP", 10))
+        speed_lbl.setStyleSheet(f"color: {TEXT_SEC}; background: transparent;")
+
+        self._speed_val_lbl = QLabel("0.9x")
+        self._speed_val_lbl.setFixedWidth(36)
+        self._speed_val_lbl.setFont(QFont("Noto Mono", 10))
+        self._speed_val_lbl.setStyleSheet(f"color: {TEXT_PRI}; background: transparent;")
+
+        self._speed_slider = QSlider(Qt.Horizontal)
+        self._speed_slider.setMinimum(5)    # 0.5x
+        self._speed_slider.setMaximum(20)   # 2.0x
+        self._speed_slider.setValue(9)      # 0.9x default
+        self._speed_slider.setFixedWidth(140)
+        self._speed_slider.setStyleSheet(
+            f"QSlider::groove:horizontal {{ background: {BORDER}; height: 4px; border-radius: 2px; }}"
+            f"QSlider::handle:horizontal {{ background: {ACCENT}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}"
+            f"QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}"
+        )
+        self._speed_slider.valueChanged.connect(self._on_speed_change)
+
+        layout.addWidget(self._en_btn)
+        layout.addStretch()
+        layout.addWidget(speed_lbl)
+        layout.addWidget(self._speed_slider)
+        layout.addWidget(self._speed_val_lbl)
+        return bar
 
     # ── Signals ───────────────────────────────────────────────────────────────
 
@@ -568,6 +639,18 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self)
         dlg.exec()
+
+    # ── Controls handlers ─────────────────────────────────────────────────────
+
+    def _on_en_toggle(self, checked: bool):
+        self._en_btn.setText("\U0001f1ec\U0001f1e7  English  ON" if checked else "\U0001f1ec\U0001f1e7  English  OFF")
+        self._chat.set_english_visible(checked)
+
+    def _on_speed_change(self, value: int):
+        speed = value / 10.0
+        self._speed_val_lbl.setText(f"{speed:.1f}x")
+        if self._pipeline:
+            self._pipeline.tts.speed = speed
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
