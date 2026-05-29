@@ -181,8 +181,9 @@ class MessageBubble(QFrame):
         bubble.setMaximumWidth(680)
 
     def set_english_visible(self, visible: bool):
-        for w in getattr(self, '_meta_widgets', []):
-            w.setVisible(visible)
+        container = getattr(self, '_english_container', None)
+        if container is not None:
+            container.setVisible(visible)
 
     def _build_user_content(self, text: str) -> QWidget:
         w = QWidget()
@@ -218,21 +219,28 @@ class MessageBubble(QFrame):
         layout.addWidget(jp_lbl)
 
         # Meta section (English, notes, corrections)
-        self._meta_widgets = []
+        # English section — single container so show/hide works reliably
+        self._english_container = QWidget()
+        en_layout = QVBoxLayout(self._english_container)
+        en_layout.setContentsMargins(0, 4, 0, 0)
+        en_layout.setSpacing(4)
+
         if meta_part:
             sep = QFrame()
             sep.setFrameShape(QFrame.HLine)
             sep.setStyleSheet(f"color: {BORDER}; background: {BORDER}; max-height:1px;")
-            layout.addWidget(sep)
-            self._meta_widgets.append(sep)
+            en_layout.addWidget(sep)
 
             meta_lbl = QLabel(meta_part)
             meta_lbl.setWordWrap(True)
             meta_lbl.setFont(QFont("Noto Sans JP", 11))
             meta_lbl.setStyleSheet(f"color: {TEXT_SEC}; background: transparent;")
             meta_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            layout.addWidget(meta_lbl)
-            self._meta_widgets.append(meta_lbl)
+            en_layout.addWidget(meta_lbl)
+        else:
+            self._english_container.setVisible(False)
+
+        layout.addWidget(self._english_container)
 
         # Warning badge
         if flagged:

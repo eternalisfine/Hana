@@ -7,7 +7,7 @@ WHISPER_MODEL       = "medium"
 WHISPER_LANGUAGE    = "ja"                  # Force Japanese transcription
 
 VOICEVOX_URL        = "http://localhost:50021"
-VOICEVOX_SPEAKER_ID = 2
+VOICEVOX_SPEAKER_ID = 1
                                             # Run: GET /speakers for full list
 
 VAD_THRESHOLD       = 0.5                   # 0.0–1.0, higher = less sensitive
