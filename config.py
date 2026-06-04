@@ -1,6 +1,6 @@
 # config.py — Edit these to match your setup
 
-OLLAMA_MODEL        = "qwen2.5:3b"
+OLLAMA_MODEL        = "qwem2.5:3b"
 OLLAMA_URL          = "http://localhost:11434/api/chat"
 
 WHISPER_MODEL       = "medium"
