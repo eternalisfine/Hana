@@ -1,12 +1,14 @@
 # listener.py — Always-on mic with energy-based VAD (no button needed)
 
-import threading
 import queue
+import threading
 import time
+from typing import Callable, Optional
+
 import numpy as np
 import sounddevice as sd
-from typing import Callable
-from config import VAD_THRESHOLD, SILENCE_SECONDS, MIN_SPEECH_SECONDS
+
+from config import MIN_SPEECH_SECONDS, SILENCE_SECONDS, VAD_THRESHOLD
 
 SAMPLE_RATE  = 16000
 CHUNK_FRAMES = 480          # 30ms at 16kHz
@@ -23,7 +25,7 @@ class VoiceListener:
     """
 
     def __init__(self, on_speech: Callable[[np.ndarray], None],
-                 on_state_change: Callable[[str], None] | None = None):
+                 on_state_change: Optional[Callable[[str], None]] = None):
         self.on_speech       = on_speech
         self.on_state_change = on_state_change or (lambda _: None)
         self._stop_event     = threading.Event()
@@ -49,6 +51,8 @@ class VoiceListener:
 
     def stop(self):
         self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
 
     def mute(self):
         self.muted = True

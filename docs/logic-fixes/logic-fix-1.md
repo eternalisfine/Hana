@@ -1,0 +1,1 @@
+i want you to rebuild the full app while keeping reference of the airlearn app which you'll get reference from `../reference/airlearn-app.md`.

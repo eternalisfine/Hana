@@ -1,33 +1,62 @@
 # main.py — PySide6 desktop app (Enhanced UI Edition - Rock Solid Stability)
 
 import os
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "" # this line hides gpu from pytorch
 
-import sys
-import uuid
 import queue
+import sys
 import threading
-import numpy as np
-import time
-from datetime import datetime
+import uuid
 
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QScrollArea, QFrame, QPushButton, QDialog, QFormLayout,
-    QLineEdit, QSpinBox, QComboBox, QSizePolicy, QSplitter,
-    QTextEdit, QGraphicsDropShadowEffect, QSlider, QGraphicsOpacityEffect,
-    QStackedWidget, QGraphicsBlurEffect, QGraphicsEffect,
+import numpy as np
+from PySide6.QtCore import (
+    Property,
+    QEasingCurve,
+    QObject,
+    QPropertyAnimation,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer, QSize, QPropertyAnimation, QRect, QEasingCurve, QPoint, Property
-from PySide6.QtGui import QFont, QColor, QPalette, QPixmap, QIcon, QFontDatabase, QLinearGradient, QBrush, QPainter, QPainterPath, QPen, QRadialGradient
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPalette,
+    QPen,
+    QRadialGradient,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 import memory
+import safety
 import stt
 import tutor
-import safety
+from config import OLLAMA_MODEL, VOICEVOX_SPEAKER_ID
 from listener import VoiceListener
 from tts import TTSPlayer
-from config import OLLAMA_MODEL, VOICEVOX_SPEAKER_ID
 
 # Custom exit code for handling safe restarts
 EXIT_CODE_REBOOT = -123
@@ -375,13 +404,13 @@ class MessageBubble(QFrame):
 
         if flagged:
             warn_frame = QFrame()
-            warn_frame.setStyleSheet(f"""
-                QFrame {{
+            warn_frame.setStyleSheet("""
+                QFrame {
                     background: rgba(255, 140, 66, 0.1);
                     border: 1px solid rgba(255, 140, 66, 0.3);
                     border-radius: 8px;
                     padding: 6px 10px;
-                }}
+                }
             """)
             warn_layout = QHBoxLayout(warn_frame)
             warn_layout.setContentsMargins(10, 6, 10, 6)
@@ -491,7 +520,7 @@ class SettingsDialog(QDialog):
             QPushButton:hover {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_GLOW}, stop:1 {ACCENT}); }}
         """)
 
-        from config import OLLAMA_MODEL, VOICEVOX_SPEAKER_ID, WHISPER_MODEL
+        from config import WHISPER_MODEL
         layout = QFormLayout(self)
         layout.setSpacing(14)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -511,7 +540,8 @@ class SettingsDialog(QDialog):
         layout.addRow(save_btn)
 
     def _save(self):
-        import config, os, sys
+        import os
+
         config_path = os.path.join(os.path.dirname(__file__), "config.py")
         with open(config_path, "r") as f:
             src = f.read()
@@ -704,14 +734,14 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self):
         s = self.signals
-        s.status_changed.connect(self._on_status)
-        s.user_message.connect(self._on_user_msg)
-        s.tutor_message.connect(self._on_tutor_msg)
-        s.error_message.connect(self._on_error)
-        s.connection_status.connect(self._on_connection)
+        s.status_changed.connect(self._on_status, Qt.QueuedConnection)
+        s.user_message.connect(self._on_user_msg, Qt.QueuedConnection)
+        s.tutor_message.connect(self._on_tutor_msg, Qt.QueuedConnection)
+        s.error_message.connect(self._on_error, Qt.QueuedConnection)
+        s.connection_status.connect(self._on_connection, Qt.QueuedConnection)
         
         # Connect the custom safe teardown signal
-        s.teardown_complete.connect(lambda code: QApplication.instance().exit(code))
+        s.teardown_complete.connect(lambda code: QApplication.instance().exit(code), Qt.QueuedConnection)
 
     def _start_pipeline(self):
         self._pipeline = Pipeline(self.audio_queue, self.signals, self.session_id)
