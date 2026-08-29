@@ -12,10 +12,11 @@ sounddevice>=0.4.6
 soundfile>=0.12.1
 numpy>=1.24.0
 
-# Voice Activity Detection
+# Voice Activity Detection (energy-based, uses only numpy — no extra deps)
+
+# PyTorch (needed by faster-whisper CTranslate2)
 torch>=2.1.0
 torchaudio>=2.1.0
-silero-vad>=4.0.0
 
 # HTTP (Ollama + VOICEVOX)
 requests>=2.31.0

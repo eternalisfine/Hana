@@ -1,16 +1,15 @@
-# listener.py — Always-on mic with Silero VAD (no button needed)
+# listener.py — Always-on mic with energy-based VAD (no button needed)
 
 import threading
 import queue
 import time
 import numpy as np
 import sounddevice as sd
-import torch
 from typing import Callable
 from config import VAD_THRESHOLD, SILENCE_SECONDS, MIN_SPEECH_SECONDS
 
 SAMPLE_RATE  = 16000
-CHUNK_FRAMES = 512          # ~32ms at 16kHz — Silero's required chunk size
+CHUNK_FRAMES = 480          # 30ms at 16kHz
 
 
 class VoiceListener:
@@ -18,6 +17,9 @@ class VoiceListener:
     Continuously listens on the microphone.
     When speech is detected and then stops, calls `on_speech(audio_array)`.
     Automatically interrupts when the user speaks during TTS playback.
+
+    Uses RMS energy-based voice activity detection — lightweight, no external
+    dependencies beyond numpy, works on any Python version.
     """
 
     def __init__(self, on_speech: Callable[[np.ndarray], None],
@@ -27,23 +29,18 @@ class VoiceListener:
         self._stop_event     = threading.Event()
         self._thread         = None
         self._audio_queue    = queue.Queue()
-        self._vad_model      = None
         self.muted           = False    # Soft mute (still detects, just discards)
+
+        # Adaptive noise floor — auto-calibrated from initial ambient audio
+        self._noise_floor    = 0.0
+        self._calibrated     = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def load(self):
-        """Load Silero VAD — call once at startup."""
-        print("[Listener] Loading Silero VAD...")
-        self._vad_model, _ = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
-            model="silero_vad",
-            force_reload=False,
-            onnx=False,
-            verbose=False,
-        )
-        self._vad_model.eval()
-        print("[Listener] VAD ready ✓")
+        """Initialize VAD — call once at startup."""
+        print("[Listener] Loading energy-based VAD...")
+        print(f"[Listener] VAD ready ✓ (threshold={VAD_THRESHOLD})")
 
     def start(self):
         self._stop_event.clear()
@@ -61,16 +58,43 @@ class VoiceListener:
 
     # ── Internal loop ─────────────────────────────────────────────────────────
 
-    def _speech_prob(self, chunk: np.ndarray) -> float:
-        tensor = torch.from_numpy(chunk)
-        with torch.no_grad():
-            prob = self._vad_model(tensor, SAMPLE_RATE).item()
-        return prob
+    def _rms(self, chunk: np.ndarray) -> float:
+        """Root-mean-square energy of an audio chunk."""
+        return float(np.sqrt(np.mean(chunk ** 2)))
+
+    def _calibrate_noise_floor(self, chunk: np.ndarray):
+        """Exponential moving average of ambient noise during first ~0.5s."""
+        rms = self._rms(chunk)
+        if self._noise_floor == 0.0:
+            self._noise_floor = rms
+        else:
+            # Smooth: 90% old, 10% new
+            self._noise_floor = 0.9 * self._noise_floor + 0.1 * rms
+
+    def _is_speech(self, chunk: np.ndarray) -> bool:
+        """
+        Detect speech by comparing RMS energy against the noise floor.
+        VAD_THRESHOLD (0.0–1.0) controls sensitivity:
+          - Lower = more sensitive (triggers on quieter speech)
+          - Higher = less sensitive (requires louder speech)
+        """
+        rms = self._rms(chunk)
+
+        # Dynamic threshold: noise_floor + scaled gap above it
+        # At threshold=0.5, speech must be ~3x the noise floor
+        # At threshold=0.1, speech must be ~1.5x the noise floor
+        # At threshold=0.9, speech must be ~10x the noise floor
+        multiplier = 1.0 + VAD_THRESHOLD * 18.0
+        threshold = max(self._noise_floor * multiplier, 0.005)
+
+        return rms > threshold
 
     def _run(self):
         audio_buffer       = []
         recording          = False
         last_speech_time   = None
+        calibration_chunks = 0
+        calibration_target = int(0.5 * SAMPLE_RATE / CHUNK_FRAMES)  # ~0.5s
 
         def _mic_callback(indata, frames, time_info, status):
             self._audio_queue.put(indata[:, 0].copy())  # mono
@@ -98,8 +122,20 @@ class VoiceListener:
                             last_speech_time = None
                     continue
 
-                prob = self._speech_prob(chunk)
-                is_speech = prob > VAD_THRESHOLD
+                # Auto-calibrate noise floor from initial silent frames
+                if calibration_chunks < calibration_target:
+                    self._calibrate_noise_floor(chunk)
+                    calibration_chunks += 1
+                    if calibration_chunks == calibration_target:
+                        self._calibrated = True
+                        print(f"[Listener] Noise floor calibrated: {self._noise_floor:.6f}")
+                    continue
+
+                # Continuously adapt noise floor during silence (slow drift)
+                if not recording:
+                    self._noise_floor = 0.995 * self._noise_floor + 0.005 * self._rms(chunk)
+
+                is_speech = self._is_speech(chunk)
 
                 if is_speech:
                     if not recording:

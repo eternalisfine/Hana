@@ -763,12 +763,20 @@ class MainWindow(QMainWindow):
         self._chat.add_system(f"⚠ {msg}")
 
     def _on_connection(self, service: str, ok: bool):
+        # Track previous state to avoid duplicate system messages
+        if not hasattr(self, '_prev_conn'):
+            self._prev_conn = {}
+        prev = self._prev_conn.get(service)
+        self._prev_conn[service] = ok
+
         if service == "ollama":
             self._ollama_dot.set_ok(ok)
-            if not ok: self._chat.add_system("Ollama not reachable — run: ollama serve")
+            if not ok and prev is not False:
+                self._chat.add_system("Ollama not reachable — run: ollama serve")
         elif service == "voicevox":
             self._vv_dot.set_ok(ok)
-            if not ok: self._chat.add_system("VOICEVOX not reachable — start the VOICEVOX app")
+            if not ok and prev is not False:
+                self._chat.add_system("VOICEVOX not reachable — start the VOICEVOX app")
 
     def _open_settings(self):
         dlg = SettingsDialog(self)
