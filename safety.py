@@ -2,15 +2,7 @@
 
 import re
 
-# GiNZA is optional — app works without it but checking is skipped
-try:
-    import spacy
-    _nlp = spacy.load("ja_ginza")
-    GINZA_OK = True
-except Exception:
-    _nlp = None
-    GINZA_OK = False
-
+import nlp_core
 
 # ── Japanese extraction ────────────────────────────────────────────────────────
 
@@ -27,12 +19,12 @@ def extract_japanese_segments(text: str) -> list[str]:
 # ── GiNZA structural check ────────────────────────────────────────────────────
 
 def _ginza_check(text: str) -> list[str]:
-    if not GINZA_OK or not _nlp:
+    doc = nlp_core.process_text_safely(text)
+    if not doc:
         return []
 
     warnings = []
     try:
-        doc = _nlp(text)
         for sent in doc.sents:
             tokens = list(sent)
             if len(tokens) < 2:
@@ -123,6 +115,7 @@ def check(response_text: str) -> dict:
 
 
 def ginza_status() -> str:
-    if GINZA_OK:
+    _, ok = nlp_core.get_nlp()
+    if ok:
         return "GiNZA ✓"
     return "GiNZA ✗ (install: pip install ginza ja-ginza)"

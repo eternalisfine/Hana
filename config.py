@@ -16,3 +16,6 @@ MIN_SPEECH_SECONDS  = 0.4                   # Minimum speech length to process
 
 CONTEXT_MESSAGES    = 24                    # How many past messages to feed the tutor
 PROFILE_UPDATE_EVERY = 8                    # Update style profile every N user messages
+
+DAILY_XP_GOAL       = 50                    # XP target per day for streak/motivation
+VOCAB_KNOWN_THRESHOLD = 3                   # Exposures before a word counts as "known"

@@ -5,6 +5,7 @@ import requests
 import threading
 from config import OLLAMA_URL, OLLAMA_MODEL, CONTEXT_MESSAGES, PROFILE_UPDATE_EVERY
 import memory
+import knowledge
 
 # ── System Prompt ─────────────────────────────────────────────────────────────
 
@@ -25,20 +26,24 @@ Japanese response here — spoken, natural, not too long
 💡 Note: (optional) brief grammar/vocabulary explanation if relevant
 ✗ Mistake → ✓ Correction (if the student made an error, format exactly like this)
 
-## Conversation Style:
-- Scale Japanese complexity to the student's level (from the profile below)
-- Beginners: add furigana in brackets after kanji, e.g. 食べ物(たべもの)
-- Respond at spoken length — not essays
+## Adaptive Conversation Style:
+- Scale Japanese complexity based on the student's demonstrated vocabulary below
+- If the student knows very few words, use simple sentences with furigana: 食べ物(たべもの)
+- Naturally re-use words from the "weak/needs review" list when it fits the conversation
+- When the conversation allows it, introduce ONE new word or grammar pattern the student hasn't seen
 - Be genuinely warm and human, like a real language partner
-- Naturally reference things the student has said or struggled with before
 - Ask follow-up questions to keep the conversation flowing
+- Respond at spoken length — not essays
 
-## {context}
+{knowledge_block}
+
+{context}
 """
 
 def _build_system_prompt() -> str:
     context = memory.build_context_block()
-    return _SYSTEM_BASE.format(context=context)
+    knowledge_block = knowledge.build_knowledge_summary()
+    return _SYSTEM_BASE.replace("{context}", context).replace("{knowledge_block}", knowledge_block)
 
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
@@ -49,6 +54,13 @@ def chat(user_message: str, session_id: str) -> dict:
     Returns: { response, error, flagged_by_tutor }
     """
     memory.add_message(session_id, "user", user_message)
+
+    # Track vocabulary in the user's message (background, non-blocking)
+    threading.Thread(
+        target=knowledge.process_user_message,
+        args=(user_message,),
+        daemon=True,
+    ).start()
 
     history = memory.get_recent_messages(CONTEXT_MESSAGES)
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
@@ -77,6 +89,13 @@ def chat(user_message: str, session_id: str) -> dict:
         return _error(f"Ollama error: {e}")
 
     memory.add_message(session_id, "assistant", response_text)
+
+    # Track vocabulary in Hana's response (background, non-blocking)
+    threading.Thread(
+        target=knowledge.process_tutor_message,
+        args=(response_text,),
+        daemon=True,
+    ).start()
 
     # Async profile update every N user messages
     count = memory.get_user_message_count()
@@ -125,10 +144,14 @@ def _update_profile():
             "options": {"temperature": 0.1, "num_ctx": 2048}
         }, timeout=60)
         text = resp.json()["message"]["content"].strip()
-        text = text.replace("```json", "").replace("```", "").strip()
-        profile = json.loads(text)
-        memory.update_style_profile(**profile)
-    except Exception:
+        
+        import re
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            profile = json.loads(match.group(0))
+            memory.update_style_profile(**profile)
+    except Exception as e:
+        print(f"[Tutor] Profile update failed: {e}")
         pass  # Best-effort — never crash the app
 
 

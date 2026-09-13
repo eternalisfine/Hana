@@ -1,4 +1,4 @@
-# main.py — PySide6 desktop app (Enhanced UI Edition - Rock Solid Stability)
+# main.py — PySide6 desktop app (Smart Conversation Character Edition)
 
 import os
 
@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -54,7 +55,7 @@ import memory
 import safety
 import stt
 import tutor
-from config import OLLAMA_MODEL, VOICEVOX_SPEAKER_ID
+from config import OLLAMA_MODEL, VOICEVOX_SPEAKER_ID, DAILY_XP_GOAL, VOCAB_KNOWN_THRESHOLD
 from listener import VoiceListener
 from tts import TTSPlayer
 
@@ -64,16 +65,16 @@ EXIT_CODE_REBOOT = -123
 
 # ── Enhanced Colour palette (2026 Dark Glassmorphism) ─────────────────────────
 
-BG           = "#0a0a12"         
-BG_PANEL     = "#12121c"         
-BG_CARD      = "rgba(24, 24, 36, 0.85)"  
-BG_CARD_SOLID = "#181824"        
+BG           = "#0a0a12"
+BG_PANEL     = "#12121c"
+BG_CARD      = "rgba(24, 24, 36, 0.85)"
+BG_CARD_SOLID = "#181824"
 BG_USER      = "rgba(26, 42, 58, 0.9)"
 BG_TUTOR     = "rgba(28, 28, 44, 0.9)"
 BG_GLASS     = "rgba(30, 30, 48, 0.6)"
 BG_GLASS_BORDER = "rgba(255, 255, 255, 0.08)"
-ACCENT       = "#8b7cf7"         
-ACCENT_GLOW  = "#a594ff"         
+ACCENT       = "#8b7cf7"
+ACCENT_GLOW  = "#a594ff"
 ACCENT_DARK  = "#6c5ce7"
 ACCENT_GRAD_START = "#9d8eff"
 ACCENT_GRAD_END   = "#7c6af5"
@@ -202,12 +203,14 @@ class PulsingDot(QWidget):
 # ── Worker signals ────────────────────────────────────────────────────────────
 
 class Signals(QObject):
-    status_changed    = Signal(str)           
-    user_message      = Signal(str)           
-    tutor_message     = Signal(str, bool)     
+    status_changed    = Signal(str)
+    user_message      = Signal(str)
+    tutor_message     = Signal(str, bool)
     error_message     = Signal(str)
     connection_status = Signal(str, bool)
     teardown_complete = Signal(int) # Emitted when safe to close app
+    stats_updated     = Signal(int, int) # Thread-safe status bar update
+    mute_listener     = Signal(bool) # Mute listener during TTS
 
 
 # ── Processing pipeline (runs in background thread) ─────────────────────────
@@ -241,6 +244,13 @@ class Pipeline(QThread):
             if not self._running:
                 break
 
+            # Drain queue (keep only latest utterance)
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+
             self.tts.interrupt()
 
             self.signals.status_changed.emit("transcribing")
@@ -269,7 +279,12 @@ class Pipeline(QThread):
             self.signals.status_changed.emit("speaking")
             japanese_text = tutor.extract_japanese_for_tts(response)
             
-            self.tts.on_end = lambda: self.signals.status_changed.emit("listening")
+            def _on_tts_end():
+                self.signals.status_changed.emit("listening")
+                self.signals.mute_listener.emit(False)
+
+            self.tts.on_end = _on_tts_end
+            self.signals.mute_listener.emit(True)
             self.tts.speak(japanese_text)
 
 
@@ -458,6 +473,13 @@ class ChatArea(QScrollArea):
         bubble.set_english_visible(self._show_english)
         self._bubbles.append(bubble)
         self._layout.insertWidget(self._layout.count() - 1, bubble)
+
+        # Cap memory usage by pruning old bubbles
+        if len(self._bubbles) > 100:
+            old = self._bubbles.pop(0)
+            self._layout.removeWidget(old)
+            old.deleteLater()
+
         QTimer.singleShot(50, self._scroll_to_bottom)
 
     def set_english_visible(self, visible: bool):
@@ -568,6 +590,306 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
+# ── Stat Card widget ─────────────────────────────────────────────────────────
+
+class StatCard(GlassPanel):
+    """A compact stat display card for the progress dashboard."""
+    def __init__(self, icon: str, label: str, value: str, color: str = ACCENT, parent=None):
+        super().__init__(parent, radius=14)
+        self.setMinimumHeight(90)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setStyleSheet(f"""
+            GlassPanel {{
+                background: {BG_CARD_SOLID};
+                border: 1px solid {BORDER};
+                border-radius: 14px;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(4)
+
+        top = QHBoxLayout()
+        icon_lbl = QLabel(icon)
+        icon_lbl.setFont(QFont("Noto Sans JP", 18))
+        icon_lbl.setStyleSheet("background: transparent;")
+        label_lbl = QLabel(label)
+        label_lbl.setFont(QFont("Noto Sans JP", 10))
+        label_lbl.setStyleSheet(f"color: {TEXT_SEC}; background: transparent;")
+        top.addWidget(icon_lbl)
+        top.addWidget(label_lbl)
+        top.addStretch()
+
+        self._value_lbl = QLabel(value)
+        self._value_lbl.setFont(QFont("Noto Sans JP", 22, QFont.Bold))
+        self._value_lbl.setStyleSheet(f"color: {color}; background: transparent;")
+
+        layout.addLayout(top)
+        layout.addWidget(self._value_lbl)
+
+    def set_value(self, value: str):
+        self._value_lbl.setText(value)
+
+
+# ── Vocabulary list item ──────────────────────────────────────────────────────
+
+class VocabItem(QFrame):
+    """A single vocabulary word row for the progress dashboard."""
+    def __init__(self, word: str, reading: str, pos: str,
+                 times_seen: int, times_produced: int, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"""
+            QFrame {{
+                background: {BG_CARD_SOLID};
+                border: 1px solid {BORDER};
+                border-radius: 10px;
+                padding: 4px;
+            }}
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setSpacing(12)
+
+        word_lbl = QLabel(word)
+        word_lbl.setFont(QFont("Noto Sans JP", 13, QFont.Bold))
+        word_lbl.setStyleSheet(f"color: {TEXT_PRI}; background: transparent; border: none;")
+
+        reading_lbl = QLabel(reading if reading else "")
+        reading_lbl.setFont(QFont("Noto Sans JP", 10))
+        reading_lbl.setStyleSheet(f"color: {TEXT_SEC}; background: transparent; border: none;")
+
+        pos_lbl = QLabel(pos.lower() if pos else "")
+        pos_lbl.setFont(QFont("Noto Mono", 9))
+        pos_lbl.setStyleSheet(f"color: {ACCENT}; background: transparent; border: none;")
+
+        stats_lbl = QLabel(f"👁 {times_seen}  ✎ {times_produced}")
+        stats_lbl.setFont(QFont("Noto Mono", 9))
+        stats_lbl.setStyleSheet(f"color: {TEXT_FADED}; background: transparent; border: none;")
+
+        layout.addWidget(word_lbl)
+        layout.addWidget(reading_lbl)
+        layout.addStretch()
+        layout.addWidget(pos_lbl)
+        layout.addWidget(stats_lbl)
+
+
+# ── Progress Dashboard View ──────────────────────────────────────────────────
+
+class ProgressView(QScrollArea):
+    """Dashboard showing vocabulary growth, streak, known words, weak areas."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet(f"""
+            QScrollArea {{ background: {BG}; border: none; }}
+            QScrollBar:vertical {{ background: transparent; width: 8px; border-radius: 4px; }}
+            QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 4px; min-height: 40px; }}
+            QScrollBar::handle:vertical:hover {{ background: {ACCENT}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
+        """)
+
+        self._container = QWidget()
+        self._layout = QVBoxLayout(self._container)
+        self._layout.setContentsMargins(24, 24, 24, 24)
+        self._layout.setSpacing(16)
+        self.setWidget(self._container)
+
+        self._build_ui()
+
+    def _build_ui(self):
+        # Section title
+        title = QLabel("📊  Your Progress")
+        title.setFont(QFont("Noto Sans JP", 20, QFont.Bold))
+        title.setStyleSheet(f"color: {TEXT_PRI};")
+        self._layout.addWidget(title)
+
+        subtitle = QLabel("Everything you've learned through conversation with Hana")
+        subtitle.setFont(QFont("Noto Sans JP", 11))
+        subtitle.setStyleSheet(f"color: {TEXT_SEC};")
+        self._layout.addWidget(subtitle)
+        self._layout.addSpacing(8)
+
+        # Stats cards row
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(12)
+
+        self._streak_card = StatCard("🔥", "Streak", "0 days", WARN)
+        self._vocab_card = StatCard("📚", "Words Known", "0", ACCENT)
+        self._total_card = StatCard("🔤", "Total Seen", "0", INFO)
+        self._xp_card = StatCard("⭐", "Today's XP", f"0 / {DAILY_XP_GOAL}", SUCCESS)
+
+        stats_row.addWidget(self._streak_card)
+        stats_row.addWidget(self._vocab_card)
+        stats_row.addWidget(self._total_card)
+        stats_row.addWidget(self._xp_card)
+        self._layout.addLayout(stats_row)
+
+        self._layout.addSpacing(8)
+
+        # Weak words section
+        weak_title = QLabel("💪  Needs Practice")
+        weak_title.setFont(QFont("Noto Sans JP", 14, QFont.Bold))
+        weak_title.setStyleSheet(f"color: {TEXT_PRI};")
+        self._layout.addWidget(weak_title)
+
+        weak_desc = QLabel("Words you've seen but haven't used yourself yet, or ones you've been corrected on")
+        weak_desc.setFont(QFont("Noto Sans JP", 10))
+        weak_desc.setStyleSheet(f"color: {TEXT_SEC};")
+        weak_desc.setWordWrap(True)
+        self._layout.addWidget(weak_desc)
+
+        self._weak_container = QVBoxLayout()
+        self._weak_container.setSpacing(6)
+        self._layout.addLayout(self._weak_container)
+
+        self._layout.addSpacing(8)
+
+        # Recent vocabulary section
+        recent_title = QLabel("🆕  Recently Encountered")
+        recent_title.setFont(QFont("Noto Sans JP", 14, QFont.Bold))
+        recent_title.setStyleSheet(f"color: {TEXT_PRI};")
+        self._layout.addWidget(recent_title)
+
+        self._recent_container = QVBoxLayout()
+        self._recent_container.setSpacing(6)
+        self._layout.addLayout(self._recent_container)
+
+        self._layout.addStretch()
+
+    def refresh(self):
+        """Reload all data from the database and update the display."""
+        # Update stat cards
+        streak = memory.get_streak()
+        known = memory.get_vocabulary_known_count(VOCAB_KNOWN_THRESHOLD)
+        total = memory.get_total_vocabulary_count()
+        xp = memory.get_today_xp()
+
+        self._streak_card.set_value(f"{streak} day{'s' if streak != 1 else ''}")
+        self._vocab_card.set_value(str(known))
+        self._total_card.set_value(str(total))
+        self._xp_card.set_value(f"{xp} / {DAILY_XP_GOAL}")
+
+        # Update weak words
+        self._clear_layout(self._weak_container)
+        weak_words = memory.get_weak_vocabulary(limit=10)
+        if weak_words:
+            for w in weak_words:
+                item = VocabItem(
+                    w["word"], w.get("reading", ""), w.get("pos", ""),
+                    w.get("times_seen", 0), w.get("times_produced", 0)
+                )
+                self._weak_container.addWidget(item)
+        else:
+            empty = QLabel("No weak words yet — keep talking with Hana! 🌸")
+            empty.setFont(QFont("Noto Sans JP", 11))
+            empty.setStyleSheet(f"color: {TEXT_FADED};")
+            empty.setAlignment(Qt.AlignCenter)
+            self._weak_container.addWidget(empty)
+
+        # Update recent vocabulary
+        self._clear_layout(self._recent_container)
+        recent_words = memory.get_recent_vocabulary(limit=15)
+        if recent_words:
+            for w in recent_words:
+                item = VocabItem(
+                    w["word"], w.get("reading", ""), w.get("pos", ""),
+                    w.get("times_seen", 0), w.get("times_produced", 0)
+                )
+                self._recent_container.addWidget(item)
+        else:
+            empty = QLabel("Start a conversation to build your vocabulary! 💬")
+            empty.setFont(QFont("Noto Sans JP", 11))
+            empty.setStyleSheet(f"color: {TEXT_FADED};")
+            empty.setAlignment(Qt.AlignCenter)
+            self._recent_container.addWidget(empty)
+
+    def _clear_layout(self, layout):
+        """Remove all widgets from a layout."""
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+
+# ── Conversation View ─────────────────────────────────────────────────────────
+
+class ConversationView(QWidget):
+    """The main conversation view — chat area + controls."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"background: {BG};")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        layout.addWidget(self._build_controls_bar())
+        self.chat = ChatArea()
+        layout.addWidget(self.chat)
+
+    def _build_controls_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setFixedHeight(48)
+        bar.setStyleSheet(f"QFrame {{ background: {BG_PANEL}; border-bottom: 1px solid {BORDER}; }}")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(20, 0, 20, 0)
+        layout.setSpacing(16)
+
+        self.en_btn = QPushButton("🇬🇧  English  ON")
+        self.en_btn.setCheckable(True)
+        self.en_btn.setChecked(True)
+        self.en_btn.setFixedHeight(30)
+        self.en_btn.setFont(QFont("Noto Sans JP", 10))
+        self.en_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: white; border: none; border-radius: 8px; padding: 0 14px; font-weight: 500; }}"
+            f"QPushButton:!checked {{ background: {BG_CARD_SOLID}; color: {TEXT_SEC}; border: 1px solid {BORDER}; }}"
+            f"QPushButton:hover:!checked {{ background: {BG_USER}; color: {TEXT_PRI}; }}"
+        )
+
+        self.pause_btn = QPushButton("⏸  Pause")
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.setChecked(False)
+        self.pause_btn.setFixedHeight(30)
+        self.pause_btn.setFont(QFont("Noto Sans JP", 10))
+        self.pause_btn.setStyleSheet(
+            f"QPushButton {{ background: {BG_CARD_SOLID}; color: {TEXT_SEC}; border: 1px solid {BORDER}; border-radius: 8px; padding: 0 14px; font-weight: 500; }}"
+            f"QPushButton:checked {{ background: {WARN}; color: white; border: none; }}"
+            f"QPushButton:hover:!checked {{ background: {BG_USER}; color: {TEXT_PRI}; }}"
+        )
+
+        speed_lbl = QLabel("Speed:")
+        speed_lbl.setFont(QFont("Noto Sans JP", 10))
+        speed_lbl.setStyleSheet(f"color: {TEXT_SEC}; background: transparent;")
+
+        self.speed_val_lbl = QLabel("0.9x")
+        self.speed_val_lbl.setFixedWidth(40)
+        self.speed_val_lbl.setFont(QFont("Noto Mono", 10))
+        self.speed_val_lbl.setStyleSheet(f"color: {TEXT_PRI}; background: transparent;")
+
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setMinimum(5)
+        self.speed_slider.setMaximum(20)
+        self.speed_slider.setValue(9)
+        self.speed_slider.setFixedWidth(160)
+        self.speed_slider.setStyleSheet(
+            f"QSlider::groove:horizontal {{ background: {BORDER}; height: 4px; border-radius: 2px; }}"
+            f"QSlider::handle:horizontal {{ background: {ACCENT}; width: 16px; height: 16px; margin: -6px 0; border-radius: 8px; }}"
+            f"QSlider::handle:horizontal:hover {{ background: {ACCENT_GLOW}; }}"
+            f"QSlider::sub-page:horizontal {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_GRAD_START}, stop:1 {ACCENT_GRAD_END}); border-radius: 2px; }}"
+        )
+
+        layout.addWidget(self.en_btn)
+        layout.addWidget(self.pause_btn)
+        layout.addStretch()
+        layout.addWidget(speed_lbl)
+        layout.addWidget(self.speed_slider)
+        layout.addWidget(self.speed_val_lbl)
+        return bar
+
+
 # ── Main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -575,7 +897,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.session_id  = str(uuid.uuid4())
         self.signals     = Signals()
-        self.audio_queue = queue.Queue()
+        self.audio_queue = queue.Queue(maxsize=10) # Bounded queue
         self._pipeline   = None
         self._listener   = None
 
@@ -592,7 +914,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self):
         self.setWindowTitle("Japanese Tutor — はな")
-        self.resize(900, 720)
+        self.resize(960, 740)
         self.setMinimumSize(640, 480)
         self.setStyleSheet(f"QMainWindow {{ background: {BG}; }}")
 
@@ -603,6 +925,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        # ── Header ──
         header = GlassPanel(radius=0)
         header.setFixedHeight(64)
         header.setStyleSheet(f"GlassPanel {{ background: {BG_PANEL}; border-bottom: 1px solid {BORDER}; }}")
@@ -623,6 +946,32 @@ class MainWindow(QMainWindow):
         title_block.addWidget(title)
         title_block.addWidget(subtitle)
 
+        # ── Mode toggle buttons ──
+        self._talk_btn = QPushButton("💬  Talk")
+        self._talk_btn.setCheckable(True)
+        self._talk_btn.setChecked(True)
+        self._talk_btn.setFixedHeight(32)
+        self._talk_btn.setFont(QFont("Noto Sans JP", 10, QFont.Bold))
+        self._talk_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: white; border: none; border-radius: 8px; padding: 0 16px; }}"
+            f"QPushButton:!checked {{ background: {BG_CARD_SOLID}; color: {TEXT_SEC}; border: 1px solid {BORDER}; }}"
+            f"QPushButton:hover:!checked {{ background: {BG_USER}; color: {TEXT_PRI}; }}"
+        )
+        self._talk_btn.clicked.connect(lambda: self._switch_view(0))
+
+        self._progress_btn = QPushButton("📊  Progress")
+        self._progress_btn.setCheckable(True)
+        self._progress_btn.setChecked(False)
+        self._progress_btn.setFixedHeight(32)
+        self._progress_btn.setFont(QFont("Noto Sans JP", 10, QFont.Bold))
+        self._progress_btn.setStyleSheet(
+            f"QPushButton {{ background: {ACCENT}; color: white; border: none; border-radius: 8px; padding: 0 16px; }}"
+            f"QPushButton:!checked {{ background: {BG_CARD_SOLID}; color: {TEXT_SEC}; border: 1px solid {BORDER}; }}"
+            f"QPushButton:hover:!checked {{ background: {BG_USER}; color: {TEXT_PRI}; }}"
+        )
+        self._progress_btn.clicked.connect(lambda: self._switch_view(1))
+
+        # ── Connection dots ──
         self._ollama_dot = ConnectionDot("Ollama")
         self._vv_dot     = ConnectionDot("VOICEVOX")
 
@@ -638,6 +987,10 @@ class MainWindow(QMainWindow):
         h_layout.addWidget(icon_lbl)
         h_layout.addSpacing(8)
         h_layout.addLayout(title_block)
+        h_layout.addSpacing(24)
+        h_layout.addWidget(self._talk_btn)
+        h_layout.addSpacing(6)
+        h_layout.addWidget(self._progress_btn)
         h_layout.addStretch()
         h_layout.addWidget(self._ollama_dot)
         h_layout.addSpacing(20)
@@ -645,8 +998,17 @@ class MainWindow(QMainWindow):
         h_layout.addSpacing(16)
         h_layout.addWidget(settings_btn)
 
-        self._chat = ChatArea()
+        # ── Stacked content area ──
+        self._stack = QStackedWidget()
+        self._conversation_view = ConversationView()
+        self._progress_view = ProgressView()
+        self._stack.addWidget(self._conversation_view)
+        self._stack.addWidget(self._progress_view)
 
+        # Convenient references
+        self._chat = self._conversation_view.chat
+
+        # ── Status bar ──
         status_bar = GlassPanel(radius=0)
         status_bar.setFixedHeight(48)
         status_bar.setStyleSheet(f"GlassPanel {{ background: {BG_PANEL}; border-top: 1px solid {BORDER}; }}")
@@ -657,80 +1019,45 @@ class MainWindow(QMainWindow):
         self._status_lbl.setFont(QFont("Noto Mono", 11))
         self._status_lbl.setStyleSheet(f"color: {STATUS_COLORS['loading']}; background: transparent;")
 
+        # Live stats in status bar
+        self._streak_lbl = QLabel("🔥 0")
+        self._streak_lbl.setFont(QFont("Noto Sans JP", 10))
+        self._streak_lbl.setStyleSheet(f"color: {WARN}; background: transparent;")
+
+        self._vocab_count_lbl = QLabel("📚 0 words")
+        self._vocab_count_lbl.setFont(QFont("Noto Sans JP", 10))
+        self._vocab_count_lbl.setStyleSheet(f"color: {ACCENT}; background: transparent;")
+
         self._session_lbl = QLabel(f"Session  {self.session_id[:8]}")
         self._session_lbl.setFont(QFont("Noto Mono", 9))
         self._session_lbl.setStyleSheet(f"color: {TEXT_FADED}; background: transparent;")
 
         sb_layout.addWidget(self._status_lbl)
         sb_layout.addStretch()
+        sb_layout.addWidget(self._streak_lbl)
+        sb_layout.addSpacing(16)
+        sb_layout.addWidget(self._vocab_count_lbl)
+        sb_layout.addSpacing(16)
         sb_layout.addWidget(self._session_lbl)
 
         root.addWidget(header)
-        root.addWidget(self._build_controls_bar())
-        root.addWidget(self._chat)
+        root.addWidget(self._stack)
         root.addWidget(status_bar)
 
-    def _build_controls_bar(self) -> QFrame:
-        bar = QFrame()
-        bar.setFixedHeight(48)
-        bar.setStyleSheet(f"QFrame {{ background: {BG_PANEL}; border-bottom: 1px solid {BORDER}; }}")
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(20, 0, 20, 0)
-        layout.setSpacing(16)
+        # Wire up conversation view controls
+        self._conversation_view.en_btn.toggled.connect(self._on_en_toggle)
+        self._conversation_view.pause_btn.toggled.connect(self._on_pause_toggle)
+        self._conversation_view.speed_slider.valueChanged.connect(self._on_speed_change)
 
-        self._en_btn = QPushButton("🇬🇧  English  ON")
-        self._en_btn.setCheckable(True)
-        self._en_btn.setChecked(True)
-        self._en_btn.setFixedHeight(30)
-        self._en_btn.setFont(QFont("Noto Sans JP", 10))
-        self._en_btn.setStyleSheet(
-            f"QPushButton {{ background: {ACCENT}; color: white; border: none; border-radius: 8px; padding: 0 14px; font-weight: 500; }}"
-            f"QPushButton:!checked {{ background: {BG_CARD_SOLID}; color: {TEXT_SEC}; border: 1px solid {BORDER}; }}"
-            f"QPushButton:hover:!checked {{ background: {BG_USER}; color: {TEXT_PRI}; }}"
-        )
-        self._en_btn.toggled.connect(self._on_en_toggle)
+    def _switch_view(self, index: int):
+        """Switch between Talk (0) and Progress (1) views."""
+        self._stack.setCurrentIndex(index)
+        self._talk_btn.setChecked(index == 0)
+        self._progress_btn.setChecked(index == 1)
 
-        self._pause_btn = QPushButton("⏸  Pause")
-        self._pause_btn.setCheckable(True)
-        self._pause_btn.setChecked(False)
-        self._pause_btn.setFixedHeight(30)
-        self._pause_btn.setFont(QFont("Noto Sans JP", 10))
-        self._pause_btn.setStyleSheet(
-            f"QPushButton {{ background: {BG_CARD_SOLID}; color: {TEXT_SEC}; border: 1px solid {BORDER}; border-radius: 8px; padding: 0 14px; font-weight: 500; }}"
-            f"QPushButton:checked {{ background: {WARN}; color: white; border: none; }}"
-            f"QPushButton:hover:!checked {{ background: {BG_USER}; color: {TEXT_PRI}; }}"
-        )
-        self._pause_btn.toggled.connect(self._on_pause_toggle)
-
-        speed_lbl = QLabel("Speed:")
-        speed_lbl.setFont(QFont("Noto Sans JP", 10))
-        speed_lbl.setStyleSheet(f"color: {TEXT_SEC}; background: transparent;")
-
-        self._speed_val_lbl = QLabel("0.9x")
-        self._speed_val_lbl.setFixedWidth(40)
-        self._speed_val_lbl.setFont(QFont("Noto Mono", 10))
-        self._speed_val_lbl.setStyleSheet(f"color: {TEXT_PRI}; background: transparent;")
-
-        self._speed_slider = QSlider(Qt.Horizontal)
-        self._speed_slider.setMinimum(5)
-        self._speed_slider.setMaximum(20)
-        self._speed_slider.setValue(9)
-        self._speed_slider.setFixedWidth(160)
-        self._speed_slider.setStyleSheet(
-            f"QSlider::groove:horizontal {{ background: {BORDER}; height: 4px; border-radius: 2px; }}"
-            f"QSlider::handle:horizontal {{ background: {ACCENT}; width: 16px; height: 16px; margin: -6px 0; border-radius: 8px; }}"
-            f"QSlider::handle:horizontal:hover {{ background: {ACCENT_GLOW}; }}"
-            f"QSlider::sub-page:horizontal {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_GRAD_START}, stop:1 {ACCENT_GRAD_END}); border-radius: 2px; }}"
-        )
-        self._speed_slider.valueChanged.connect(self._on_speed_change)
-
-        layout.addWidget(self._en_btn)
-        layout.addWidget(self._pause_btn)
-        layout.addStretch()
-        layout.addWidget(speed_lbl)
-        layout.addWidget(self._speed_slider)
-        layout.addWidget(self._speed_val_lbl)
-        return bar
+        if index == 1:
+            # Refresh progress data when switching to dashboard
+            self._progress_view.refresh()
 
     def _connect_signals(self):
         s = self.signals
@@ -739,6 +1066,8 @@ class MainWindow(QMainWindow):
         s.tutor_message.connect(self._on_tutor_msg, Qt.QueuedConnection)
         s.error_message.connect(self._on_error, Qt.QueuedConnection)
         s.connection_status.connect(self._on_connection, Qt.QueuedConnection)
+        s.stats_updated.connect(self._update_stats_ui, Qt.QueuedConnection)
+        s.mute_listener.connect(lambda mute: self._listener.mute() if mute and self._listener else (self._listener.unmute() if self._listener else None), Qt.QueuedConnection)
         
         # Connect the custom safe teardown signal
         s.teardown_complete.connect(lambda code: QApplication.instance().exit(code), Qt.QueuedConnection)
@@ -769,6 +1098,12 @@ class MainWindow(QMainWindow):
         self._conn_timer.start(15_000)
         self._run_connection_check()
 
+        # Also set up a timer to periodically refresh status bar stats
+        self._stats_timer = QTimer(self)
+        self._stats_timer.timeout.connect(self._refresh_status_bar_stats)
+        self._stats_timer.start(30_000)  # Every 30s
+        QTimer.singleShot(3000, self._refresh_status_bar_stats)  # Initial after 3s
+
     def _run_connection_check(self):
         def _check():
             ok_ollama = tutor.check_ollama()
@@ -776,6 +1111,24 @@ class MainWindow(QMainWindow):
             self.signals.connection_status.emit("ollama",   ok_ollama)
             self.signals.connection_status.emit("voicevox", ok_vv)
         threading.Thread(target=_check, daemon=True).start()
+
+    def _update_stats_ui(self, streak: int, known: int):
+        self._streak_lbl.setText(f"🔥 {streak}")
+        self._vocab_count_lbl.setText(f"📚 {known} words")
+
+    def _refresh_status_bar_stats(self):
+        \"\"\"Update the streak and vocab count in the status bar.\"\"\"
+        def _fetch():
+            streak = memory.get_streak()
+            known = memory.get_vocabulary_known_count(VOCAB_KNOWN_THRESHOLD)
+            return streak, known
+
+        def _worker():
+            streak, known = _fetch()
+            # Use thread-safe Qt Signal instead of QTimer.singleShot from background thread
+            self.signals.stats_updated.emit(streak, known)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_status(self, key: str):
         label = STATUS_LABELS.get(key, key)
@@ -785,6 +1138,8 @@ class MainWindow(QMainWindow):
 
     def _on_user_msg(self, text: str):
         self._chat.add_message("user", text)
+        # Refresh stats shortly after a message exchange
+        QTimer.singleShot(2000, self._refresh_status_bar_stats)
 
     def _on_tutor_msg(self, text: str, flagged: bool):
         self._chat.add_message("assistant", text, flagged)
@@ -814,7 +1169,7 @@ class MainWindow(QMainWindow):
 
     def _on_pause_toggle(self, paused: bool):
         if paused:
-            self._pause_btn.setText("▶  Resume")
+            self._conversation_view.pause_btn.setText("▶  Resume")
             if self._pipeline: self._pipeline.tts.interrupt()
             if self._listener: self._listener.mute()
             while not self.audio_queue.empty():
@@ -823,18 +1178,18 @@ class MainWindow(QMainWindow):
             self._on_status("idle")
             self._chat.add_system("⏸ Paused")
         else:
-            self._pause_btn.setText("⏸  Pause")
+            self._conversation_view.pause_btn.setText("⏸  Pause")
             if self._listener: self._listener.unmute()
             self._on_status("listening")
             self._chat.add_system("▶ Resumed")
 
     def _on_en_toggle(self, checked: bool):
-        self._en_btn.setText("🇬🇧  English  ON" if checked else "🇬🇧  English  OFF")
+        self._conversation_view.en_btn.setText("🇬🇧  English  ON" if checked else "🇬🇧  English  OFF")
         self._chat.set_english_visible(checked)
 
     def _on_speed_change(self, value: int):
         speed = value / 10.0
-        self._speed_val_lbl.setText(f"{speed:.1f}x")
+        self._conversation_view.speed_val_lbl.setText(f"{speed:.1f}x")
         if self._pipeline:
             self._pipeline.tts.speed = speed
 
@@ -853,6 +1208,8 @@ class MainWindow(QMainWindow):
         # 2. Safely stop the QTimer from the main thread
         if hasattr(self, '_conn_timer'):
             self._conn_timer.stop()
+        if hasattr(self, '_stats_timer'):
+            self._stats_timer.stop()
 
         # 3. Offload all the heavy cleanup to a background thread
         threading.Thread(target=self._perform_teardown, daemon=True).start()

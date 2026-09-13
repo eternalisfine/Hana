@@ -12,6 +12,7 @@ from config import MIN_SPEECH_SECONDS, SILENCE_SECONDS, VAD_THRESHOLD
 
 SAMPLE_RATE  = 16000
 CHUNK_FRAMES = 480          # 30ms at 16kHz
+MAX_SPEECH_SECONDS = 30.0   # Cap max recording length to prevent OOM
 
 
 class VoiceListener:
@@ -30,7 +31,7 @@ class VoiceListener:
         self.on_state_change = on_state_change or (lambda _: None)
         self._stop_event     = threading.Event()
         self._thread         = None
-        self._audio_queue    = queue.Queue()
+        self._audio_queue    = queue.Queue(maxsize=3000) # Cap at ~90s to prevent leak
         self.muted           = False    # Soft mute (still detects, just discards)
 
         # Adaptive noise floor — auto-calibrated from initial ambient audio
@@ -101,7 +102,10 @@ class VoiceListener:
         calibration_target = int(0.5 * SAMPLE_RATE / CHUNK_FRAMES)  # ~0.5s
 
         def _mic_callback(indata, frames, time_info, status):
-            self._audio_queue.put(indata[:, 0].copy())  # mono
+            try:
+                self._audio_queue.put_nowait(indata[:, 0].copy())  # mono
+            except queue.Full:
+                pass  # Drop frames if pipeline is severely backed up
 
         with sd.InputStream(
             samplerate=SAMPLE_RATE,
@@ -137,7 +141,10 @@ class VoiceListener:
 
                 # Continuously adapt noise floor during silence (slow drift)
                 if not recording:
-                    self._noise_floor = 0.995 * self._noise_floor + 0.005 * self._rms(chunk)
+                    rms = self._rms(chunk)
+                    # Bound the noise floor drift so it doesn't get locked too high
+                    if rms < 0.05:
+                        self._noise_floor = 0.995 * self._noise_floor + 0.005 * rms
 
                 is_speech = self._is_speech(chunk)
 
@@ -152,7 +159,9 @@ class VoiceListener:
                 elif recording:
                     audio_buffer.append(chunk)   # keep buffering brief silence
                     elapsed = time.monotonic() - last_speech_time
-                    if elapsed >= SILENCE_SECONDS:
+                    duration = len(audio_buffer) * CHUNK_FRAMES / SAMPLE_RATE
+                    
+                    if elapsed >= SILENCE_SECONDS or duration >= MAX_SPEECH_SECONDS:
                         self._flush(audio_buffer)
                         audio_buffer     = []
                         recording        = False
